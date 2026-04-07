@@ -534,7 +534,7 @@ update_branch=$(format_string "$branch_fmt" \
                               "b=$orig_update_branch" \
                               "t=" \
                               "v=$FULL_VERSION")
-    
+
 # Make the release tag and branch name according to our current data
 release_tag=$(format_string "$tag_fmt" \
                             "b=$orig_release_branch" \
@@ -544,7 +544,7 @@ release_branch=$(format_string "$branch_fmt" \
                                "b=$orig_release_branch" \
                                "t=$(std_tag_name)" \
                                "v=$FULL_VERSION")
-    
+
 # Create a update branch, unless it's the same as our current branch
 if [ "$update_branch" != "$orig_update_branch" ]; then
     $VERBOSE "== Creating a local update branch and switch to it: $update_branch"
@@ -567,7 +567,11 @@ $ECHO "== Configuring OpenSSL for update and release.  This may take a bit of ti
 
 ./Configure cc >&42
 
-$VERBOSE "== Checking source file updates and fips checksums"
+$VERBOSE "== Checking fips checksums and source file updates"
+
+if grep -q '^update-fips-checksums *:' Makefile; then
+    make update-fips-checksums >&42
+fi
 
 make update >&42
 # As long as we're doing an alpha release, we can have symbols without specific
@@ -575,9 +579,6 @@ make update >&42
 # assigned number.
 if [ "$next_method" != 'alpha' ] && grep -q '^renumber *:' Makefile; then
     make renumber >&42
-fi
-if grep -q '^update-fips-checksums *:' Makefile; then
-    make update-fips-checksums >&42
 fi
 
 if [ -n "$(git status --porcelain --untracked-files=no --ignore-submodules=all)" ]; then
