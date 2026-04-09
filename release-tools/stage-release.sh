@@ -567,11 +567,7 @@ $ECHO "== Configuring OpenSSL for update and release.  This may take a bit of ti
 
 ./Configure cc >&42
 
-$VERBOSE "== Checking fips checksums and source file updates"
-
-if grep -q '^update-fips-checksums *:' Makefile; then
-    make update-fips-checksums >&42
-fi
+$VERBOSE "== Checking source file updates and fips checksums"
 
 make update >&42
 # As long as we're doing an alpha release, we can have symbols without specific
@@ -579,6 +575,10 @@ make update >&42
 # assigned number.
 if [ "$next_method" != 'alpha' ] && grep -q '^renumber *:' Makefile; then
     make renumber >&42
+fi
+if grep -q '^update-fips-checksums *:' Makefile; then
+    make clean >&42
+    make update-fips-checksums >&42
 fi
 
 if [ -n "$(git status --porcelain --untracked-files=no --ignore-submodules=all)" ]; then
