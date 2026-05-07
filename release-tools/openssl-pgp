@@ -31,7 +31,7 @@ Usage:
   openssl-pgp subkey-rotate --new-subkey-label LABEL [--generate-subkey] [--input-cert FILE] [--output FILE]
   openssl-pgp sign [--output FILE] [--binary] FILE...
   openssl-pgp cert-revoke [--output FILE] [--reason REASON] [--message TEXT]
-  openssl-pgp subkey-revoke --subkey-label LABEL [--output FILE] [--reason REASON] [--message TEXT]
+  openssl-pgp subkey-revoke --subkey-fingerprint FPR [--input-cert FILE] [--output FILE] [--reason REASON] [--message TEXT]
 
 Required configuration (per command):
   cert-init        OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_CURRENT_SUBKEY_LABEL,
@@ -42,8 +42,9 @@ Required configuration (per command):
   sign             OPENSSL_PGP_CURRENT_SUBKEY_LABEL
   cert-revoke      OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_PRIMARY_CARDSET
   subkey-revoke    OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_PRIMARY_CARDSET,
-                   plus a subkey label from --subkey-label or
-                   OPENSSL_PGP_CURRENT_SUBKEY_LABEL
+                   plus --subkey-fingerprint identifying which subkey in
+                   the input cert to revoke (compromise scenario: subkey
+                   private key is NOT touched, only the primary signs)
   primary-generate label and cardset (CLI flags or env vars)
   subkey-generate  label (CLI flag or OPENSSL_PGP_CURRENT_SUBKEY_LABEL)
 
@@ -594,10 +595,16 @@ cmd_cert_revoke() {
 }
 
 cmd_subkey_revoke() {
-    local label='' output='' reason=compromised message="signing subkey suspected compromised"
+    # subkey-revoke now identifies the subkey by fingerprint inside the
+    # published cert (--input-cert + --subkey-fingerprint), so a
+    # compromised or deleted subkey can still be revoked using only the
+    # primary OCS-protected key.  No HSM access for the subkey itself.
+    local input=$OPENSSL_PGP_CERT
+    local fingerprint='' output='' reason=compromised message="signing subkey suspected compromised"
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --subkey-label) label=${2:?missing value for --subkey-label}; shift 2 ;;
+            --subkey-fingerprint) fingerprint=${2:?missing value for --subkey-fingerprint}; shift 2 ;;
+            --input-cert) input=${2:?missing value for --input-cert}; shift 2 ;;
             --output) output=${2:?missing value for --output}; shift 2 ;;
             --reason) reason=${2:?missing value for --reason}; shift 2 ;;
             --message) message=${2:?missing value for --message}; shift 2 ;;
@@ -605,38 +612,28 @@ cmd_subkey_revoke() {
             *) die "unknown subkey-revoke argument: $1" ;;
         esac
     done
-    # subkey-revoke needs the primary (signs the revocation) and a subkey
-    # label.  The label comes from --subkey-label, otherwise defaults to
-    # OPENSSL_PGP_CURRENT_SUBKEY_LABEL — which then must be set AND exist.
+    [[ -n "$fingerprint" ]] || die "subkey-revoke requires --subkey-fingerprint (look it up in the published cert with \`sq inspect\` or \`gpg --list-keys --with-subkey-fingerprint\`)"
     require_pkcs11_module
     require_sq_pkcs11_binary
     require_nshield_metadata_tools
     require_hsm_label OPENSSL_PGP_PRIMARY_LABEL
     verify_primary_cardset_exists
-    if [[ -z "$label" ]]; then
-        require_hsm_label OPENSSL_PGP_CURRENT_SUBKEY_LABEL
-        label=$OPENSSL_PGP_CURRENT_SUBKEY_LABEL
-    else
-        label_exists "$label" \
-            || die "--subkey-label $label is not present in the Security World; run \"$OPENSSL_PGP_CKLIST -n --cka-label=$label\" to verify"
-    fi
-    [[ -n "$output" ]] || output="${label}-revocation.asc"
+    require_cert_exists "$input"
+    [[ -n "$output" ]] || output="${input%.asc}-subkey-revocation.asc"
     require_output_absent "$output"
     verify_rsa4096_label "$OPENSSL_PGP_PRIMARY_LABEL"
-    verify_rsa4096_label "$label"
 
-    local primary_created subkey_created
+    local primary_created
     primary_created=$(hsm_gentime "$OPENSSL_PGP_PRIMARY_LABEL")
-    subkey_created=$(hsm_gentime "$label")
 
     local primary_uri
     primary_uri=$(primary_key_uri)
 
     sq subkey-revoke \
         --key-uri "$primary_uri" --ocs \
-        --subkey-label "$label" \
+        --input-cert "$input" \
+        --subkey-fingerprint "$fingerprint" \
         --creation-time "$primary_created" \
-        --subkey-creation-time "$subkey_created" \
         --reason "$reason" \
         --message "$message" \
         --output "$output"
