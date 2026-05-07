@@ -532,8 +532,21 @@ cmd_sign() {
     require_nshield_metadata_tools
     require_hsm_label OPENSSL_PGP_CURRENT_SUBKEY_LABEL
     verify_rsa4096_label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL"
+    require_cert_exists "$OPENSSL_PGP_CERT"
     local subkey_created
     subkey_created=$(hsm_gentime "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL")
+
+    # Pre-flight: confirm the configured HSM signing key is a current
+    # valid signer in the published cert before any artefact is signed.
+    # Catches a stale, unrelated, revoked, or expired
+    # OPENSSL_PGP_CURRENT_SUBKEY_LABEL — without this check, a typo in
+    # the env var would silently produce a release signature that fails
+    # verification against the published cert.
+    sq verify-signing-key \
+        --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
+        --creation-time "$subkey_created" \
+        --input-cert "$OPENSSL_PGP_CERT" \
+        || die "OPENSSL_PGP_CURRENT_SUBKEY_LABEL=$OPENSSL_PGP_CURRENT_SUBKEY_LABEL is not a current valid signer in $OPENSSL_PGP_CERT (see message above); refusing to sign"
 
     local artifact sig args=()
     [[ "$binary" == "1" ]] && args+=(--binary)
