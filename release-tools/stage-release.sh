@@ -44,6 +44,14 @@ Usage: stage-release.sh [ options ... ]
 --local-user=<keyid>
                 For the purpose of signing tags and tar files, use this
                 key (default: use the default e-mail address’ key).
+                The exact form of <keyid> depends on the configured signer:
+                gpg expects a key id or fingerprint; the sq-pkcs11 git
+                shim (--gpg-program) expects a CKA_LABEL.
+--gpg-program=<path>
+                Override the program git uses to sign tags.  Set this to
+                tools/release-tools/sq-pkcs11-git-shim to route tag
+                signing through sq-pkcs11 (HSM-backed).  Direct gpg
+                invocations elsewhere in this script are unaffected.
 --unsigned      Do not sign anything.
 
 --staging-address=<address>
@@ -96,6 +104,11 @@ do_manual=false
 do_signed=true
 tagkey=' -s'
 gpgkey=
+# When set, `git tag -s` is run with `gpg.program=$gpg_program`, redirecting
+# tag signing through a custom signer (e.g. tools/release-tools/sq-pkcs11-git-shim
+# for HSM-backed signing).  Direct gpg invocations elsewhere in this script
+# are unaffected by this setting.
+gpg_program=
 reviewers=
 
 staging_address=upload@dev.openssl.org
@@ -106,6 +119,7 @@ TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
               -l 'branch-fmt:,tag-fmt:' \
               -l 'reviewer:' \
               -l 'local-user:,unsigned' \
+              -l 'gpg-program:' \
               -l 'staging-address:' \
               -l 'no-upload,no-update' \
               -l 'quiet,verbose,debug' \
@@ -168,6 +182,11 @@ while true; do
         do_signed=false
         tagkey=" -a"
         gpgkey=
+        ;;
+    --gpg-program )
+        shift
+        gpg_program="$1"
+        shift
         ;;
     --staging-address )
         shift
@@ -628,7 +647,12 @@ if [ -n "$reviewers" ]; then
     addrev --release --nopr $reviewers
 fi
 $ECHO "Tagging release with tag $release_tag.  You may need to enter a pass phrase"
-git tag$tagkey "$release_tag" -m "OpenSSL $release release tag"
+if [ -n "$gpg_program" ] && $do_signed; then
+    git -c "gpg.program=$gpg_program" tag$tagkey "$release_tag" \
+        -m "OpenSSL $release release tag"
+else
+    git tag$tagkey "$release_tag" -m "OpenSSL $release release tag"
+fi
 
 tarfile=openssl-$release.tar
 tgzfile=$tarfile.gz
@@ -1017,6 +1041,7 @@ B<--clean-worktree> |
 B<--branch-fmt>=I<fmt> |
 B<--tag-fmt>=I<fmt> |
 B<--local-user>=I<keyid> |
+B<--gpg-program>=I<path> |
 B<--unsigned> |
 B<--reviewer>=I<id> |
 B<--staging-address>=I<address> |
@@ -1159,6 +1184,29 @@ means retagging a release commit manually as well.
 Use I<keyid> as the local user for C<git tag> and for signing with C<gpg>.
 
 If not given, then the default e-mail address' key is used.
+
+The form of I<keyid> depends on the program performing the signing.  When
+the default C<gpg> is used, I<keyid> is a key id, fingerprint, or e-mail
+address as understood by C<gpg>.  When B<--gpg-program> points at the
+sq-pkcs11 shim (see below), I<keyid> is the C<CKA_LABEL> of a private key
+on the configured PKCS#11 token.
+
+=item B<--gpg-program>=I<path>
+
+Override the program C<git tag -s> uses to produce its OpenPGP signature.
+By default C<git> calls whatever C<gpg.program> resolves to (typically
+C<gpg>).  Setting this option redirects tag signing — and only tag
+signing — to I<path>.  The most common use is
+
+    --gpg-program=$TOOLS/release-tools/sq-pkcs11-git-shim
+
+which routes tag signing through C<sq-pkcs11> against an HSM-resident
+private key identified by B<--local-user> as a C<CKA_LABEL>.
+
+Direct C<gpg> invocations later in this script (tarball detached
+signature, announcement clearsign) are not affected by this option;
+combine with B<--unsigned> if those should be skipped and signed by
+another tool out-of-band.
 
 =item B<--unsigned>
 
