@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=$1
+shift
+
+mkdir -p "$state_dir"
+chmod 0770 "$state_dir"
+
+log="$state_dir/ceremony.log"
+rc_file="$state_dir/rc"
+
+rm -f "$rc_file"
+
+{
+    date -u '+started=%Y-%m-%dT%H:%M:%SZ'
+    echo "command=$*"
+    echo
+
+    set +e
+    "$@"
+    rc=$?
+    set -e
+
+    echo
+    date -u '+finished=%Y-%m-%dT%H:%M:%SZ'
+    echo "rc=$rc"
+
+    printf '%s\n' "$rc" > "$rc_file"
+    exit "$rc"
+} 2>&1 | tee "$log"
