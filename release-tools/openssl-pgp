@@ -64,6 +64,7 @@ Optional configuration:
 
 This wrapper implements the OpenSSL release-artifacts signing policy:
   - generated OpenPGP keys are nShield PKCS#11 RSA-4096 keys
+  - generated keys are created with generatekey --generate --batch
   - generated keys always include logkeyusage=yes for Security World audit logging
   - primary key is generated protect=token under the configured 2-of-4 OCS
   - signing subkeys are generated protect=module
@@ -306,8 +307,8 @@ default_sig_path() {
 
 generatekey_pkcs11() {
     require_generatekey
-    note "running nShield generatekey; ACS/OCS prompts may follow"
-    "$OPENSSL_PGP_GENERATEKEY" pkcs11 "$@"
+    note "running nShield generatekey in batch mode; ACS/OCS prompts may follow"
+    "$OPENSSL_PGP_GENERATEKEY" --generate --batch pkcs11 "$@"
 }
 
 append_generate_module_arg() {
