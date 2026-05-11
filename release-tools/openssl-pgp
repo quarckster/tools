@@ -61,6 +61,10 @@ Optional configuration:
                                      primary-key operations so the K/N OCS quorum ceremony
                                      runs in preload's interactive UI and sq-pkcs11 inherits
                                      the preloaded session
+  OPENSSL_PGP_PRELOAD_MODULE         nShield module preload pins to via -m (default: 1).
+                                     Avoids spurious LogTokenNotPresent errors on multi-
+                                     module hosts where one set of cards is shuttled
+                                     between readers.  Set to "" to load on all modules.
   PKCS11_MODULE_PATH                 PKCS#11 module path (default: /opt/nfast/toolkits/pkcs11/libcknfast.so)
   OPENSSL_PGP_CKLIST                 cklist path (default: /opt/nfast/bin/cklist)
   OPENSSL_PGP_NFKMINFO               nfkminfo path (default: /opt/nfast/bin/nfkminfo)
@@ -223,10 +227,23 @@ sq() {
 # inherited via libcknfast; OPENSSL_PGP_PRIMARY_CARDSET names the OCS.
 # Subkey operations (sign) use the plain sq() above — the signing
 # subkey is module-protected and needs no preload.
+#
+# OPENSSL_PGP_PRELOAD_MODULE pins preload to a single nShield module
+# (-m flag).  Default "1" — when the agent has more than one module and
+# operators shuttle cards between readers, preload would otherwise try
+# to load the keys into every module and trip LogTokenNotPresent on
+# whichever module lost its cards first.  Pinning to one module
+# sidesteps that.  Override with OPENSSL_PGP_PRELOAD_MODULE=N (or empty
+# string to use preload's default, all-modules behaviour).
 sq_with_preload() {
     require_primary_cardset
+    # ${VAR-default} (no colon) defaults on unset only — preserves an
+    # explicit empty string so the operator can opt out of -m entirely.
+    local module=${OPENSSL_PGP_PRELOAD_MODULE-1}
+    local -a preload_args=()
+    [[ -n "$module" ]] && preload_args+=(-m "$module")
     PKCS11_MODULE_PATH=$PKCS11_MODULE_PATH \
-        "$OPENSSL_PGP_PRELOAD" -c "$OPENSSL_PGP_PRIMARY_CARDSET" -- \
+        "$OPENSSL_PGP_PRELOAD" "${preload_args[@]}" -c "$OPENSSL_PGP_PRIMARY_CARDSET" -- \
         "$OPENSSL_PGP_SQ_PKCS11" "$@"
 }
 
