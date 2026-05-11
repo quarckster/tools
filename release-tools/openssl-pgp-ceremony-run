@@ -180,7 +180,13 @@ run_start_and_wait() {
     chgrp "$socket_group" "$socket" 2>/dev/null || true
     chmod 0660 "$socket" 2>/dev/null || true
 
+    local server_owner
+    server_owner=$(id -un)
+
     for user in "${allow_users[@]}"; do
+        if [[ $user == "$server_owner" ]]; then
+            continue
+        fi
         if ! tmux -S "$socket" server-access -a "$user"; then
             tmux -S "$socket" kill-session -t "$session" 2>/dev/null || true
             die "failed to grant tmux access to user: $user"
