@@ -57,6 +57,10 @@ Optional configuration:
   OPENSSL_PGP_GENERATEKEY            generatekey path (default: /opt/nfast/bin/generatekey)
   OPENSSL_PGP_GENERATE_MODULE        Optional nShield module number/name for generatekey module=
   OPENSSL_PGP_SQ_PKCS11              sq-pkcs11 binary (default: looked up as "sq-pkcs11" on PATH)
+  OPENSSL_PGP_PRELOAD                preload path (default: /opt/nfast/bin/preload) — wraps
+                                     primary-key operations so the K/N OCS quorum ceremony
+                                     runs in preload's interactive UI and sq-pkcs11 inherits
+                                     the preloaded session
   PKCS11_MODULE_PATH                 PKCS#11 module path (default: /opt/nfast/toolkits/pkcs11/libcknfast.so)
   OPENSSL_PGP_CKLIST                 cklist path (default: /opt/nfast/bin/cklist)
   OPENSSL_PGP_NFKMINFO               nfkminfo path (default: /opt/nfast/bin/nfkminfo)
@@ -117,6 +121,7 @@ default_config() {
     : "${OPENSSL_PGP_NFKMINFO:=/opt/nfast/bin/nfkminfo}"
     : "${OPENSSL_PGP_GENTIME_TZ:=UTC}"
     : "${OPENSSL_PGP_SQ_PKCS11:=sq-pkcs11}"
+    : "${OPENSSL_PGP_PRELOAD:=/opt/nfast/bin/preload}"
 }
 
 # Each command calls only the prerequisite checks it actually needs, so a
@@ -131,6 +136,18 @@ require_pkcs11_module() {
 require_sq_pkcs11_binary() {
     [[ -x "$OPENSSL_PGP_SQ_PKCS11" ]] || command -v "$OPENSSL_PGP_SQ_PKCS11" >/dev/null 2>&1 \
         || die "sq-pkcs11 not found: $OPENSSL_PGP_SQ_PKCS11"
+}
+
+# preload wraps every sq-pkcs11 invocation that touches the primary key.
+# It runs the K/N OCS quorum ceremony interactively (slot polling,
+# per-card prompts) and exec()s sq-pkcs11 with the preloaded session
+# available to libcknfast — sq-pkcs11 then sees the OCS slot as
+# already-authenticated and calls C_Login with a NULL PIN (the PKCS#11
+# protected-authentication-path idiom) to flip the session into User
+# state.  Sign operations use module-protected subkeys and do not need
+# preload — only the four primary-key commands below.
+require_preload() {
+    [[ -x "$OPENSSL_PGP_PRELOAD" ]] || die "preload not executable: $OPENSSL_PGP_PRELOAD"
 }
 
 require_userid() {
@@ -198,6 +215,19 @@ require_generatekey() {
 
 sq() {
     PKCS11_MODULE_PATH=$PKCS11_MODULE_PATH "$OPENSSL_PGP_SQ_PKCS11" "$@"
+}
+
+# sq() wrapped in preload — for primary-key operations (cert-init,
+# subkey-rotate, cert-revoke, subkey-revoke).  preload runs the OCS
+# quorum ceremony and exec()s sq-pkcs11 with the preloaded session
+# inherited via libcknfast; OPENSSL_PGP_PRIMARY_CARDSET names the OCS.
+# Subkey operations (sign) use the plain sq() above — the signing
+# subkey is module-protected and needs no preload.
+sq_with_preload() {
+    require_primary_cardset
+    PKCS11_MODULE_PATH=$PKCS11_MODULE_PATH \
+        "$OPENSSL_PGP_PRELOAD" -c "$OPENSSL_PGP_PRIMARY_CARDSET" -- \
+        "$OPENSSL_PGP_SQ_PKCS11" "$@"
 }
 
 cklist_for_label() {
@@ -405,6 +435,7 @@ cmd_cert_init() {
     # cmd_*_generate calls), otherwise they MUST already exist.
     require_pkcs11_module
     require_sq_pkcs11_binary
+    require_preload
     require_nshield_metadata_tools
     require_userid
     [[ -n "${OPENSSL_PGP_PRIMARY_LABEL:-}" ]] || die "OPENSSL_PGP_PRIMARY_LABEL is required"
@@ -435,8 +466,8 @@ cmd_cert_init() {
     local primary_uri
     primary_uri=$(primary_key_uri)
 
-    sq cert-export \
-        --key-uri "$primary_uri" --ocs \
+    sq_with_preload cert-export \
+        --key-uri "$primary_uri" \
         --subkey-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
         --userid "$OPENSSL_PGP_USERID" \
         --creation-time "$primary_created" \
@@ -445,8 +476,8 @@ cmd_cert_init() {
         --subkey-validity-period 1y \
         --output "$output"
 
-    sq cert-revoke \
-        --key-uri "$primary_uri" --ocs \
+    sq_with_preload cert-revoke \
+        --key-uri "$primary_uri" \
         --creation-time "$primary_created" \
         --reason compromised \
         --message "offline primary-key revocation certificate generated during cert-init" \
@@ -477,6 +508,7 @@ cmd_subkey_rotate() {
     # from the input cert and the new one comes from --new-subkey-label.
     require_pkcs11_module
     require_sq_pkcs11_binary
+    require_preload
     require_nshield_metadata_tools
     require_hsm_label OPENSSL_PGP_PRIMARY_LABEL
     verify_primary_cardset_exists
@@ -497,9 +529,9 @@ cmd_subkey_rotate() {
     local primary_uri
     primary_uri=$(primary_key_uri)
 
-    sq cert-export \
+    sq_with_preload cert-export \
         --merge-cert "$input" \
-        --key-uri "$primary_uri" --ocs \
+        --key-uri "$primary_uri" \
         --subkey-label "$new_label" \
         --creation-time "$primary_created" \
         --subkey-creation-time "$subkey_created" \
@@ -588,6 +620,7 @@ cmd_cert_revoke() {
     # cert-revoke uses only the primary key + OCS; no UID, no subkey label.
     require_pkcs11_module
     require_sq_pkcs11_binary
+    require_preload
     require_nshield_metadata_tools
     require_hsm_label OPENSSL_PGP_PRIMARY_LABEL
     verify_primary_cardset_exists
@@ -599,8 +632,8 @@ cmd_cert_revoke() {
     local primary_uri
     primary_uri=$(primary_key_uri)
 
-    sq cert-revoke \
-        --key-uri "$primary_uri" --ocs \
+    sq_with_preload cert-revoke \
+        --key-uri "$primary_uri" \
         --creation-time "$primary_created" \
         --reason "$reason" \
         --message "$message" \
@@ -629,6 +662,7 @@ cmd_subkey_revoke() {
     [[ -n "$fingerprint" ]] || die "subkey-revoke requires --subkey-fingerprint (look it up in the published cert with \`sq inspect\` or \`gpg --list-keys --with-subkey-fingerprint\`)"
     require_pkcs11_module
     require_sq_pkcs11_binary
+    require_preload
     require_nshield_metadata_tools
     require_hsm_label OPENSSL_PGP_PRIMARY_LABEL
     verify_primary_cardset_exists
@@ -643,8 +677,8 @@ cmd_subkey_revoke() {
     local primary_uri
     primary_uri=$(primary_key_uri)
 
-    sq subkey-revoke \
-        --key-uri "$primary_uri" --ocs \
+    sq_with_preload subkey-revoke \
+        --key-uri "$primary_uri" \
         --input-cert "$input" \
         --subkey-fingerprint "$fingerprint" \
         --creation-time "$primary_created" \
