@@ -44,9 +44,9 @@ Usage: stage-release.sh [ options ... ]
                 Override the program git uses to sign tags.  Defaults
                 to tools/release-tools/sq-pkcs11-git-shim, which routes
                 tag signing through sq-pkcs11 (HSM-backed).  Set to
-                "gpg" to fall back to a local gpg keyring.  Tarball and
-                announcement signing always go through openssl-pgp and
-                are not affected by this option.
+                "gpg" to fall back to a local gpg keyring.  Tarball
+                signing always goes through openssl-pgp and is not
+                affected by this option.
 --unsigned      Do not sign anything.
 
 --quiet         Really quiet, only the final output will still be output.
@@ -88,8 +88,8 @@ do_signed=true
 tagkey=' -s'
 # gpg.program for `git tag -s`.  Defaults below to sq-pkcs11-git-shim
 # (HSM-backed signing) once $RELEASE_TOOLS is known; override with
-# --gpg-program to use a different signer.  Tarball and announcement
-# signing always go through openssl-pgp and are unaffected by this.
+# --gpg-program to use a different signer.  Tarball signing always
+# goes through openssl-pgp and is unaffected by this.
 gpg_program=
 reviewers=
 
@@ -463,11 +463,8 @@ set_version
 release="$FULL_VERSION"
 if [ -n "$PRE_LABEL" ]; then
     release_text="$SERIES$_BUILD_METADATA $PRE_LABEL $PRE_NUM"
-    announce_template=openssl-announce-pre-release.tmpl
 else
-    release_type=$(std_release_type $VERSION)
     release_text="$release"
-    announce_template=openssl-announce-release-$release_type.tmpl
 fi
 $VERBOSE "== Updated version information to $release"
 
@@ -499,10 +496,9 @@ fi
 tarfile=openssl-$release.tar
 tgzfile=$tarfile.gz
 metadata=openssl-$release.dat
-announce=openssl-$release.txt
 
-$ECHO "== Generating tar, hash, announcement and metadata files."
-$ECHO "== This make take a bit of time..."
+$ECHO "== Generating tar, hash, and metadata files."
+$ECHO "== This may take a bit of time..."
 
 $VERBOSE "== Making tarfile: $tgzfile"
 
@@ -528,36 +524,18 @@ echo $sha1hash "$tgzfile" > "../$tgzfile.sha1"
 sha256hash=$(openssl sha256 < "../$tgzfile" | \
     (IFS='= '; while read X H; do echo $H; done))
 echo $sha256hash "$tgzfile" > "../$tgzfile.sha256"
-length=$(wc -c < "../$tgzfile")
 
-$VERBOSE "== Generating announcement text: $announce"
-# Hack the announcement template
-cat "$RELEASE_AUX/$announce_template" \
-    | sed -e "s|\\\$release_text|$release_text|g" \
-          -e "s|\\\$release_tag|$release_tag|g" \
-          -e "s|\\\$release|$release|g" \
-          -e "s|\\\$series|$SERIES|g" \
-          -e "s|\\\$label|$PRE_LABEL|g" \
-          -e "s|\\\$tarfile|$tgzfile|" \
-          -e "s|\\\$length|$length|" \
-          -e "s|\\\$sha1hash|$sha1hash|" \
-          -e "s|\\\$sha256hash|$sha256hash|" \
-    | perl -p "$RELEASE_AUX/fix-title.pl" \
-    > "../$announce"
-
-$VERBOSE "== Generating signatures: $tgzfile.asc $announce.asc"
-rm -f "../$tgzfile.asc" "../$announce.asc"
+$VERBOSE "== Generating signature: $tgzfile.asc"
+rm -f "../$tgzfile.asc"
 if $do_signed; then
-    $ECHO "Signing the release files via openssl-pgp."
+    $ECHO "Signing the release tarball via openssl-pgp."
     "$RELEASE_TOOLS/openssl-pgp" sign "../$tgzfile"
-    "$RELEASE_TOOLS/openssl-pgp" sign "../$announce"
 fi
 
 if $do_signed; then
-    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256"
-                    "$tgzfile.asc" "$announce" "$announce.asc" )
+    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" "$tgzfile.asc" )
 else
-    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" "$announce" )
+    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" )
 fi
 
 $VERBOSE "== Generating metadata file: $metadata"
@@ -775,10 +753,9 @@ are given, they must be followed exactly.
 B<stage-release.sh> operates on the current worktree directly: it
 refuses to run if the worktree is not clean, and updates the current
 branch in place.  The release artifacts (tarball, hashes, signature,
-announcement, metadata) are written to the parent directory.  Pushing
-the resulting commits and tag, and shipping the artifacts, are the
-caller's responsibility -- nothing is uploaded or pushed by this
-script.
+metadata) are written to the parent directory.  Pushing the resulting
+commits and tag, and shipping the artifacts, are the caller's
+responsibility -- nothing is uploaded or pushed by this script.
 
 =head1 OPTIONS
 
@@ -844,14 +821,14 @@ through C<sq-pkcs11> against an HSM-resident private key identified
 by B<--local-user> as a C<CKA_LABEL>.  Override with C<--gpg-program=gpg>
 to fall back to a local C<gpg> keyring.
 
-Tarball and announcement signing always run through C<openssl-pgp>
-and are unaffected by this option; combine with B<--unsigned> if
-those should be skipped and signed out-of-band by another tool.
+Tarball signing always runs through C<openssl-pgp> and is unaffected
+by this option; combine with B<--unsigned> if it should be skipped
+and signed out-of-band by another tool.
 
 =item B<--unsigned>
 
-Do not sign the tarball or announcement file.  This leaves it for other
-scripts to sign the files later.
+Do not sign the tarball.  This leaves it for other scripts to sign
+the file later.
 
 =item B<--quiet>
 
@@ -979,13 +956,6 @@ The SHA1 and SHA256 checksums for F<openssl-{VERSION}.tar.gz>.
 =item F<openssl-{VERSION}.tar.gz.asc>
 
 The detached PGP signature for F<openssl-{VERSION}.tar.gz>.
-
-=item F<openssl-{VERSION}.txt>, F<openssl-{VERSION}.txt.asc>
-
-The announcement text and its detached PGP signature.  Earlier
-versions of this script clear-signed the announcement; with the
-move to C<openssl-pgp> (which does not support cleartext signatures)
-the signature is now detached, so both files are produced.
 
 =item F<openssl-{VERSION}.dat>
 
