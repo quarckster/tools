@@ -24,11 +24,6 @@ Usage: stage-release.sh [ options ... ]
                 It can only be given with --alpha.
 --beta          Start or increase the "beta" pre-release tag.
 --final         Get out of "alpha" or "beta" and make a final release.
-                Implies --branch.
-
---branch        Create a release branch 'openssl-{major}.{minor}',
-                where '{major}' and '{minor}' are the major and minor
-                version numbers.
 
 --reviewer=<id> The reviewer of the commits.
 --local-user=<keyid>
@@ -61,8 +56,10 @@ EOF
 next_method=
 next_method2=
 
-do_branch=false
-warn_branch=false
+# Always try to create the release branch.  The post-arg-parsing
+# logic below resets this to false when we're already on a release
+# branch or when PATCH != 0, so passing --branch was redundant.
+do_branch=true
 
 ECHO=echo
 DEBUG=:
@@ -78,7 +75,6 @@ tagkey=' -s'
 reviewers=
 
 TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
-              -l 'branch' \
               -l 'reviewer:' \
               -l 'local-user:,unsigned' \
               -l 'quiet,verbose,debug' \
@@ -94,17 +90,9 @@ while true; do
             next_method2=$next_method
         fi
         shift
-        if [ "$next_method" = 'final' ]; then
-            do_branch=true
-        fi
         ;;
     --next-beta )
         next_method2=$(echo "x$1" | sed -e 's|^x--next-||')
-        shift
-        ;;
-    --branch )
-        do_branch=true
-        warn_branch=true
         shift
         ;;
     --reviewer )
@@ -312,33 +300,24 @@ get_version
 
 # Branches to start from.  The release branch is where the changes for the
 # release are made, and the update branch is where the post-release changes are
-# made.  If --branch was given and is relevant, they should be different (and
-# the update branch should be 'master'), otherwise they should be the same.
+# made.  When releasing from master at PATCH == 0 they differ (the update
+# branch stays as master, the release branch becomes openssl-X.Y); otherwise
+# they are the same.
 orig_update_branch="$orig_branch"
 orig_release_branch="$(std_branch_name)"
 
-# among others, we only create a release branch if the patch number is zero
+# We create a release branch only when we're on master at PATCH == 0;
+# otherwise (already on a release branch, or this is a patch release)
+# we make the release commit on the current branch.
 if [ "$orig_update_branch" = "$orig_release_branch" ] \
        || [ -n "$PATCH" -a "$PATCH" != 0 ]; then
-    if $do_branch && $warn_branch; then
-        echo >&2 "Warning! We're already in a release branch; --branch ignored"
-    fi
     do_branch=false
 fi
 
-if $do_branch; then
-    if [ "$orig_update_branch" != "master" ]; then
-        echo >&2 "--branch is invalid unless the current branch is 'master'"
-        exit 1
-    fi
-    # No need to check if $orig_update_branch and $orig_release_branch differ,
-    # 'cause the code a few lines up guarantee that if they are the same,
-    # $do_branch becomes false
-else
-    # In this case, the computed release branch may differ from the update branch,
-    # even if it shouldn't...  this is the case when alpha or beta releases are
-    # made in the master branch, which is perfectly ok.  Therefore, simply reset
-    # the release branch to be the same as the update branch and carry on.
+if ! $do_branch; then
+    # The computed release branch may differ from the update branch when
+    # alpha or beta releases are made on master, which is fine -- in that
+    # case we keep operating on the current branch.
     orig_release_branch="$orig_update_branch"
 fi
 
@@ -693,7 +672,6 @@ B<--alpha> |
 B<--next-beta> |
 B<--beta> |
 B<--final> |
-B<--branch> |
 B<--local-user>=I<keyid> |
 B<--unsigned> |
 B<--reviewer>=I<id> |
@@ -752,14 +730,6 @@ release is done.
 
 Set the state of this branch to indicate that regular releases are to be
 done.  This is only valid if alpha or beta releases are currently ongoing.
-
-This implies B<--branch>.
-
-=item B<--branch>
-
-Create a branch specific for the I<SERIES> release series, if it doesn't
-already exist, and switch to it when making the release files.  The exact
-branch name will be C<< openssl-I<SERIES> >>.
 
 =item B<--reviewer>=I<id>
 
@@ -927,8 +897,9 @@ The update branch.  This is always given.
 
 =item B<release_branch>=I<branch>
 
-The release branch, if it differs from the update branch (i.e. B<--branch>
-was given or implied).
+The release branch, if a new one was created (i.e. when releasing from
+C<master> at PATCH == 0).  Omitted when the release commit is made on
+the current branch.
 
 =item B<release_tag>=I<tag>
 
