@@ -32,21 +32,10 @@ Usage: stage-release.sh [ options ... ]
 
 --reviewer=<id> The reviewer of the commits.
 --local-user=<keyid>
-                For the purpose of signing tags and release artifacts,
-                use this key.  The default signer is openssl-pgp (and
-                the sq-pkcs11-git-shim for tag signing), so <keyid> is
-                a CKA_LABEL on the configured HSM.  When --gpg-program
-                points at a classic gpg, <keyid> follows gpg's rules
-                (key id, fingerprint, or e-mail).
-                Also exported as OPENSSL_PGP_CURRENT_SUBKEY_LABEL so
-                openssl-pgp picks up the same key for artifact signing.
---gpg-program=<path>
-                Override the program git uses to sign tags.  Defaults
-                to tools/release-tools/sq-pkcs11-git-shim, which routes
-                tag signing through sq-pkcs11 (HSM-backed).  Set to
-                "gpg" to fall back to a local gpg keyring.  Tarball
-                signing always goes through openssl-pgp and is not
-                affected by this option.
+                CKA_LABEL of the HSM key used for both tag signing
+                (via release-tools/sq-pkcs11-git-shim) and release
+                artifact signing (via release-tools/openssl-pgp).
+                Also exported as OPENSSL_PGP_CURRENT_SUBKEY_LABEL.
 --unsigned      Do not sign anything.
 
 --quiet         Really quiet, only the final output will still be output.
@@ -86,18 +75,12 @@ do_manual=false
 
 do_signed=true
 tagkey=' -s'
-# gpg.program for `git tag -s`.  Defaults below to sq-pkcs11-git-shim
-# (HSM-backed signing) once $RELEASE_TOOLS is known; override with
-# --gpg-program to use a different signer.  Tarball signing always
-# goes through openssl-pgp and is unaffected by this.
-gpg_program=
 reviewers=
 
 TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
               -l 'branch' \
               -l 'reviewer:' \
               -l 'local-user:,unsigned' \
-              -l 'gpg-program:' \
               -l 'quiet,verbose,debug' \
               -l 'porcelain' \
               -l 'help,manual' \
@@ -142,11 +125,6 @@ while true; do
         shift
         do_signed=false
         tagkey=" -a"
-        ;;
-    --gpg-program )
-        shift
-        gpg_program="$1"
-        shift
         ;;
     --quiet )
         ECHO=:
@@ -237,13 +215,6 @@ for fn in "$RELEASE_TOOLS/do-copyright-year" \
 done
 if ! $found; then
     exit 1
-fi
-
-# Default tag-signing shim.  sq-pkcs11-git-shim adapts git's gpg-CLI
-# expectations to sq-pkcs11 (HSM-backed signing); --gpg-program can
-# override (e.g. --gpg-program=gpg to fall back to a local keyring).
-if [ -z "$gpg_program" ]; then
-    gpg_program="$RELEASE_TOOLS/sq-pkcs11-git-shim"
 fi
 
 # Check that we have the scripts that define functions we use
@@ -485,9 +456,10 @@ git commit $git_quiet -m "Prepare for release of $release_text"$'\n\nRelease: ye
 if [ -n "$reviewers" ]; then
     addrev --release --nopr $reviewers
 fi
-$ECHO "Tagging release with tag $release_tag.  You may need to enter a pass phrase"
+$ECHO "Tagging release with tag $release_tag."
 if $do_signed; then
-    git -c "gpg.program=$gpg_program" tag$tagkey "$release_tag" \
+    git -c "gpg.program=$RELEASE_TOOLS/sq-pkcs11-git-shim" \
+        tag$tagkey "$release_tag" \
         -m "OpenSSL $release release tag"
 else
     git tag$tagkey "$release_tag" -m "OpenSSL $release release tag"
@@ -723,7 +695,6 @@ B<--beta> |
 B<--final> |
 B<--branch> |
 B<--local-user>=I<keyid> |
-B<--gpg-program>=I<path> |
 B<--unsigned> |
 B<--reviewer>=I<id> |
 B<--quiet> |
@@ -800,30 +771,15 @@ means retagging a release commit manually as well.
 
 =item B<--local-user>=I<keyid>
 
-Use I<keyid> as the local user for C<git tag> and as the signing key
-for the C<openssl-pgp> wrapper.  The value is also exported as
-C<OPENSSL_PGP_CURRENT_SUBKEY_LABEL> so artifact signing picks up the
-same key without an extra environment hop.
+The C<CKA_LABEL> of the HSM-resident private key used for signing.
+Tag signing goes through C<release-tools/sq-pkcs11-git-shim>
+(plugged into C<git> via C<gpg.program>); tarball signing goes
+through C<release-tools/openssl-pgp>.  Both ultimately invoke
+C<sq-pkcs11> against the same PKCS#11 token.
 
-The form of I<keyid> depends on the configured signer.  With the
-default tag-signing shim (C<sq-pkcs11-git-shim>) and with the
-C<openssl-pgp> wrapper, I<keyid> is the C<CKA_LABEL> of a private
-key on the configured PKCS#11 token.  When B<--gpg-program> points
-at a classic C<gpg>, I<keyid> is a key id, fingerprint, or e-mail
-address as understood by C<gpg>.
-
-=item B<--gpg-program>=I<path>
-
-Override the program C<git tag -s> uses to produce its OpenPGP
-signature.  By default this script sets it to
-C<$TOOLS/release-tools/sq-pkcs11-git-shim>, which routes tag signing
-through C<sq-pkcs11> against an HSM-resident private key identified
-by B<--local-user> as a C<CKA_LABEL>.  Override with C<--gpg-program=gpg>
-to fall back to a local C<gpg> keyring.
-
-Tarball signing always runs through C<openssl-pgp> and is unaffected
-by this option; combine with B<--unsigned> if it should be skipped
-and signed out-of-band by another tool.
+The value is also exported as C<OPENSSL_PGP_CURRENT_SUBKEY_LABEL>
+so C<openssl-pgp> picks up the same key without an extra
+environment hop.
 
 =item B<--unsigned>
 
