@@ -42,16 +42,21 @@ Usage: stage-release.sh [ options ... ]
 
 --reviewer=<id> The reviewer of the commits.
 --local-user=<keyid>
-                For the purpose of signing tags and tar files, use this
-                key (default: use the default e-mail address’ key).
-                The exact form of <keyid> depends on the configured signer:
-                gpg expects a key id or fingerprint; the sq-pkcs11 git
-                shim (--gpg-program) expects a CKA_LABEL.
+                For the purpose of signing tags and release artifacts,
+                use this key.  The default signer is openssl-pgp (and
+                the sq-pkcs11-git-shim for tag signing), so <keyid> is
+                a CKA_LABEL on the configured HSM.  When --gpg-program
+                points at a classic gpg, <keyid> follows gpg's rules
+                (key id, fingerprint, or e-mail).
+                Also exported as OPENSSL_PGP_CURRENT_SUBKEY_LABEL so
+                openssl-pgp picks up the same key for artifact signing.
 --gpg-program=<path>
-                Override the program git uses to sign tags.  Set this to
-                tools/release-tools/sq-pkcs11-git-shim to route tag
-                signing through sq-pkcs11 (HSM-backed).  Direct gpg
-                invocations elsewhere in this script are unaffected.
+                Override the program git uses to sign tags.  Defaults
+                to tools/release-tools/sq-pkcs11-git-shim, which routes
+                tag signing through sq-pkcs11 (HSM-backed).  Set to
+                "gpg" to fall back to a local gpg keyring.  Tarball and
+                announcement signing always go through openssl-pgp and
+                are not affected by this option.
 --unsigned      Do not sign anything.
 
 --staging-address=<address>
@@ -103,11 +108,10 @@ do_manual=false
 
 do_signed=true
 tagkey=' -s'
-gpgkey=
-# When set, `git tag -s` is run with `gpg.program=$gpg_program`, redirecting
-# tag signing through a custom signer (e.g. tools/release-tools/sq-pkcs11-git-shim
-# for HSM-backed signing).  Direct gpg invocations elsewhere in this script
-# are unaffected by this setting.
+# gpg.program for `git tag -s`.  Defaults below to sq-pkcs11-git-shim
+# (HSM-backed signing) once $RELEASE_TOOLS is known; override with
+# --gpg-program to use a different signer.  Tarball and announcement
+# signing always go through openssl-pgp and are unaffected by this.
 gpg_program=
 reviewers=
 
@@ -174,14 +178,15 @@ while true; do
         shift
         do_signed=true
         tagkey=" -u $1"
-        gpgkey=" -u $1"
+        # openssl-pgp reads the signing-key label from the env, so a
+        # CLI override needs to propagate to subprocess env too.
+        export OPENSSL_PGP_CURRENT_SUBKEY_LABEL="$1"
         shift
         ;;
     --unsigned )
         shift
         do_signed=false
         tagkey=" -a"
-        gpgkey=
         ;;
     --gpg-program )
         shift
@@ -290,7 +295,9 @@ RELEASE_AUX="$RELEASE_TOOLS/release-aux"
 
 # Check that we have external scripts that we use
 found=true
-for fn in "$RELEASE_TOOLS/do-copyright-year"; do
+for fn in "$RELEASE_TOOLS/do-copyright-year" \
+          "$RELEASE_TOOLS/openssl-pgp" \
+          "$RELEASE_TOOLS/sq-pkcs11-git-shim"; do
     if ! [ -f "$fn" ]; then
         echo >&2 "'$fn' is missing"
         found=false
@@ -298,6 +305,13 @@ for fn in "$RELEASE_TOOLS/do-copyright-year"; do
 done
 if ! $found; then
     exit 1
+fi
+
+# Default tag-signing shim.  sq-pkcs11-git-shim adapts git's gpg-CLI
+# expectations to sq-pkcs11 (HSM-backed signing); --gpg-program can
+# override (e.g. --gpg-program=gpg to fall back to a local keyring).
+if [ -z "$gpg_program" ]; then
+    gpg_program="$RELEASE_TOOLS/sq-pkcs11-git-shim"
 fi
 
 # Check that we have the scripts that define functions we use
@@ -647,7 +661,7 @@ if [ -n "$reviewers" ]; then
     addrev --release --nopr $reviewers
 fi
 $ECHO "Tagging release with tag $release_tag.  You may need to enter a pass phrase"
-if [ -n "$gpg_program" ] && $do_signed; then
+if $do_signed; then
     git -c "gpg.program=$gpg_program" tag$tagkey "$release_tag" \
         -m "OpenSSL $release release tag"
 else
@@ -705,10 +719,10 @@ cat "$RELEASE_AUX/$announce_template" \
 
 $VERBOSE "== Generating signatures: $tgzfile.asc $announce.asc"
 rm -f "../$tgzfile.asc" "../$announce.asc"
-$ECHO "Signing the release files.  You may need to enter a pass phrase"
 if $do_signed; then
-    gpg$gpgkey --use-agent -sba "../$tgzfile"
-    gpg$gpgkey --use-agent -sta --clearsign "../$announce"
+    $ECHO "Signing the release files via openssl-pgp."
+    "$RELEASE_TOOLS/openssl-pgp" sign "../$tgzfile"
+    "$RELEASE_TOOLS/openssl-pgp" sign "../$announce"
 fi
 
 if ! $clean_worktree; then
@@ -719,7 +733,7 @@ fi
 
 if $do_signed; then
     staging_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256"
-                    "$tgzfile.asc" "$announce.asc" )
+                    "$tgzfile.asc" "$announce" "$announce.asc" )
 else
     staging_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" "$announce" )
 fi
@@ -1181,32 +1195,30 @@ means retagging a release commit manually as well.
 
 =item B<--local-user>=I<keyid>
 
-Use I<keyid> as the local user for C<git tag> and for signing with C<gpg>.
+Use I<keyid> as the local user for C<git tag> and as the signing key
+for the C<openssl-pgp> wrapper.  The value is also exported as
+C<OPENSSL_PGP_CURRENT_SUBKEY_LABEL> so artifact signing picks up the
+same key without an extra environment hop.
 
-If not given, then the default e-mail address' key is used.
-
-The form of I<keyid> depends on the program performing the signing.  When
-the default C<gpg> is used, I<keyid> is a key id, fingerprint, or e-mail
-address as understood by C<gpg>.  When B<--gpg-program> points at the
-sq-pkcs11 shim (see below), I<keyid> is the C<CKA_LABEL> of a private key
-on the configured PKCS#11 token.
+The form of I<keyid> depends on the configured signer.  With the
+default tag-signing shim (C<sq-pkcs11-git-shim>) and with the
+C<openssl-pgp> wrapper, I<keyid> is the C<CKA_LABEL> of a private
+key on the configured PKCS#11 token.  When B<--gpg-program> points
+at a classic C<gpg>, I<keyid> is a key id, fingerprint, or e-mail
+address as understood by C<gpg>.
 
 =item B<--gpg-program>=I<path>
 
-Override the program C<git tag -s> uses to produce its OpenPGP signature.
-By default C<git> calls whatever C<gpg.program> resolves to (typically
-C<gpg>).  Setting this option redirects tag signing — and only tag
-signing — to I<path>.  The most common use is
+Override the program C<git tag -s> uses to produce its OpenPGP
+signature.  By default this script sets it to
+C<$TOOLS/release-tools/sq-pkcs11-git-shim>, which routes tag signing
+through C<sq-pkcs11> against an HSM-resident private key identified
+by B<--local-user> as a C<CKA_LABEL>.  Override with C<--gpg-program=gpg>
+to fall back to a local C<gpg> keyring.
 
-    --gpg-program=$TOOLS/release-tools/sq-pkcs11-git-shim
-
-which routes tag signing through C<sq-pkcs11> against an HSM-resident
-private key identified by B<--local-user> as a C<CKA_LABEL>.
-
-Direct C<gpg> invocations later in this script (tarball detached
-signature, announcement clearsign) are not affected by this option;
-combine with B<--unsigned> if those should be skipped and signed by
-another tool out-of-band.
+Tarball and announcement signing always run through C<openssl-pgp>
+and are unaffected by this option; combine with B<--unsigned> if
+those should be skipped and signed out-of-band by another tool.
 
 =item B<--unsigned>
 
@@ -1378,9 +1390,12 @@ The SHA1 and SHA256 checksums for F<openssl-{VERSION}.tar.gz>.
 
 The detached PGP signature for F<openssl-{VERSION}.tar.gz>.
 
-=item F<openssl-{VERSION}.txt.asc>
+=item F<openssl-{VERSION}.txt>, F<openssl-{VERSION}.txt.asc>
 
-The announcement text, clear signed with PGP.
+The announcement text and its detached PGP signature.  Earlier
+versions of this script clear-signed the announcement; with the
+move to C<openssl-pgp> (which does not support cleartext signatures)
+the signature is now detached, so both files are uploaded.
 
 =item F<openssl-{VERSION}.dat>
 
