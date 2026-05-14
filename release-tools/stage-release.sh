@@ -26,7 +26,7 @@ Usage: stage-release.sh [ options ... ]
 --final         Get out of "alpha" or "beta" and make a final release.
 
 --reviewer=<id> The reviewer of the commits.
---local-user=<keyid>
+--key-label=<label>
                 CKA_LABEL of the HSM key used for both tag signing
                 (via release-tools/sq-pkcs11-git-shim) and release
                 artifact signing (via release-tools/openssl-pgp).
@@ -76,7 +76,7 @@ reviewers=
 
 TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
               -l 'reviewer:' \
-              -l 'local-user:,unsigned' \
+              -l 'key-label:,unsigned' \
               -l 'quiet,verbose,debug' \
               -l 'porcelain' \
               -l 'help,manual' \
@@ -100,7 +100,7 @@ while true; do
         shift
         shift
         ;;
-    --local-user )
+    --key-label )
         shift
         do_signed=true
         tagkey=" -u $1"
@@ -672,7 +672,7 @@ B<--alpha> |
 B<--next-beta> |
 B<--beta> |
 B<--final> |
-B<--local-user>=I<keyid> |
+B<--key-label>=I<label> |
 B<--unsigned> |
 B<--reviewer>=I<id> |
 B<--quiet> |
@@ -739,7 +739,7 @@ Multiple reviewers are allowed.
 If no reviewer is given, you will have to run C<addrev> manually, which
 means retagging a release commit manually as well.
 
-=item B<--local-user>=I<keyid>
+=item B<--key-label>=I<label>
 
 The C<CKA_LABEL> of the HSM-resident private key used for signing.
 Tag signing goes through C<release-tools/sq-pkcs11-git-shim>
