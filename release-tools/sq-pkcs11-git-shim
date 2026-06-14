@@ -31,6 +31,14 @@
 #                              (default: "gpg" in PATH)
 #   PKCS11_MODULE_PATH         passed straight through to sq-pkcs11
 #                              (default: sq-pkcs11's own default)
+#   OPENSSL_PGP_CERT           published OpenPGP cert.  When set, passed to
+#                              `sq-pkcs11 sign --input-cert` so the signature's
+#                              key-creation time (and thus its issuer
+#                              fingerprint) is derived from the published
+#                              signing subkey.  Without it sq-pkcs11 falls back
+#                              to the Unix epoch, whose fingerprint resolves to
+#                              no published key and makes `git verify-tag`
+#                              report "No public key".
 
 set -euo pipefail
 
@@ -139,7 +147,17 @@ cat > "$tmp"
 
 # --output - streams the armored detached signature to stdout, which is
 # exactly what git expects to read back.
-"$sq" sign --key-label "$keyid" --output - "$tmp"
+#
+# When OPENSSL_PGP_CERT is set, pass it as --input-cert so sq-pkcs11
+# derives the key-creation time from the published signing subkey; the
+# signature's issuer fingerprint then matches that subkey and the tag
+# verifies.  Without it sq-pkcs11 defaults to the Unix epoch (the old
+# behaviour), whose fingerprint resolves to no published key.
+sign_args=(sign --key-label "$keyid" --output -)
+if [[ -n "${OPENSSL_PGP_CERT:-}" ]]; then
+    sign_args+=(--input-cert "$OPENSSL_PGP_CERT")
+fi
+"$sq" "${sign_args[@]}" "$tmp"
 
 # git's gpg-interface.c parses GnuPG's status protocol when --status-fd
 # was supplied.  Modern git (since ~2.31) also accepts a missing

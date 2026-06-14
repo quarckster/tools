@@ -598,6 +598,14 @@ cmd_sign() {
         --input-cert "$OPENSSL_PGP_CERT" \
         || die "OPENSSL_PGP_CURRENT_SUBKEY_LABEL=$OPENSSL_PGP_CURRENT_SUBKEY_LABEL is not a current valid signer in $OPENSSL_PGP_CERT (see message above); refusing to sign"
 
+    # Derive the signature's key-creation time from the published cert
+    # (--input-cert) rather than passing --creation-time "$subkey_created"
+    # directly.  This ties the signature's issuer fingerprint to the exact
+    # subkey published in $OPENSSL_PGP_CERT — the single source of truth
+    # verifiers use — and matches the git-tag shim, which has no nfkminfo
+    # gentime to fall back on.  The verify-signing-key pre-flight above
+    # already proved the subkey (at $subkey_created) is in this cert, so
+    # the derived time equals $subkey_created by construction.
     local artifact sig args=()
     [[ "$binary" == "1" ]] && args+=(--binary)
     for artifact in "$@"; do
@@ -607,7 +615,7 @@ cmd_sign() {
             require_output_absent "$sig"
             sq sign "${args[@]}" \
                 --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
-                --creation-time "$subkey_created" \
+                --input-cert "$OPENSSL_PGP_CERT" \
                 --output "$sig" \
                 "$artifact"
         else
@@ -615,7 +623,7 @@ cmd_sign() {
             require_output_absent "$sig"
             sq sign "${args[@]}" \
                 --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
-                --creation-time "$subkey_created" \
+                --input-cert "$OPENSSL_PGP_CERT" \
                 "$artifact"
         fi
         note "signed: $artifact -> $sig"
