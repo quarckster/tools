@@ -14,7 +14,7 @@ tool, write the subpackage, import it here, and call its register().
 
 import argparse
 
-from . import crltest, pem
+from . import crltest, pem, statem_clnt_construct_test
 
 
 def main(argv=None):
@@ -26,6 +26,7 @@ def main(argv=None):
 
     crltest.register(sub)
     pem.register(sub)
+    statem_clnt_construct_test.register(sub)
 
     args = parser.parse_args(argv)
     return args.func(args) or 0
