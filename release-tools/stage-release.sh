@@ -26,9 +26,6 @@ Usage: stage-release.sh [ options ... ]
 --final         Get out of "alpha" or "beta" and make a final release.
 
 --reviewer=<id> The reviewer of the commits.
---unsigned      Accepted and ignored.  This script never signs; the tag it
-                creates is annotated, and signing it and the tarball is a
-                separate step on a host that can reach the HSM.
 
 --quiet         Really quiet, only the final output will still be output.
 --verbose       Verbose output.
@@ -71,7 +68,6 @@ reviewers=
 
 TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
               -l 'reviewer:' \
-              -l 'unsigned' \
               -l 'quiet,verbose,debug' \
               -l 'porcelain' \
               -l 'help,manual' \
@@ -93,12 +89,6 @@ while true; do
     --reviewer )
         reviewers="$reviewers $1=$2"
         shift
-        shift
-        ;;
-    --unsigned )
-        # A no-op, kept so the release pipelines that pass it keep working.
-        # Signing moved out of this script entirely; see the note above the
-        # tagging step.
         shift
         ;;
     --quiet )
@@ -650,7 +640,6 @@ B<--alpha> |
 B<--next-beta> |
 B<--beta> |
 B<--final> |
-B<--unsigned> |
 B<--reviewer>=I<id> |
 B<--quiet> |
 B<--verbose> |
@@ -682,6 +671,10 @@ branch in place.  The release artifacts (tarball, hashes, metadata) are
 written to the parent directory.  Signing them, pushing the resulting
 commits and tag, and shipping the artifacts, are the caller's
 responsibility -- nothing is signed, uploaded or pushed by this script.
+
+The release tag is annotated, not signed: the signing key is held on an
+HSM that the build host cannot reach, so signing the tag and the tarball
+is a separate step, run where that access exists.
 
 =head1 OPTIONS
 
@@ -715,18 +708,6 @@ Multiple reviewers are allowed.
 
 If no reviewer is given, you will have to run C<addrev> manually, which
 means retagging a release commit manually as well.
-
-=item B<--unsigned>
-
-Accepted and ignored, so that callers passing it keep working.
-
-This script does not sign.  The release tag it creates is annotated,
-and neither it nor the tarball is signed here: the signing key is held
-on an HSM that the build host cannot reach.  Signing is a separate step
-performed where that access exists, re-tagging the same commit with
-C<git tag -s -f> through C<sq-pkcs11-gpg-shim> and signing the tarball
-with C<release-tools/openssl-pgp>.  Splitting the two is what lets a
-release be staged, and staging rehearsals be run, with no HSM at all.
 
 =item B<--quiet>
 
