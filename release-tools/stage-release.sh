@@ -26,12 +26,9 @@ Usage: stage-release.sh [ options ... ]
 --final         Get out of "alpha" or "beta" and make a final release.
 
 --reviewer=<id> The reviewer of the commits.
---key-label=<label>
-                CKA_LABEL of the HSM key used for both tag signing
-                (via release-tools/sq-pkcs11-git-shim) and release
-                artifact signing (via release-tools/openssl-pgp).
-                Also exported as OPENSSL_PGP_CURRENT_SUBKEY_LABEL.
---unsigned      Do not sign anything.
+--unsigned      Accepted and ignored.  This script never signs; the tag it
+                creates is annotated, and signing it and the tarball is a
+                separate step on a host that can reach the HSM.
 
 --quiet         Really quiet, only the final output will still be output.
 --verbose       Verbose output.
@@ -70,13 +67,11 @@ do_porcelain=false
 do_help=false
 do_manual=false
 
-do_signed=true
-tagkey=' -s'
 reviewers=
 
 TEMP=$(getopt -l 'alpha,next-beta,beta,final' \
               -l 'reviewer:' \
-              -l 'key-label:,unsigned' \
+              -l 'unsigned' \
               -l 'quiet,verbose,debug' \
               -l 'porcelain' \
               -l 'help,manual' \
@@ -100,19 +95,11 @@ while true; do
         shift
         shift
         ;;
-    --key-label )
-        shift
-        do_signed=true
-        tagkey=" -u $1"
-        # openssl-pgp reads the signing-key label from the env, so a
-        # CLI override needs to propagate to subprocess env too.
-        export OPENSSL_PGP_CURRENT_SUBKEY_LABEL="$1"
-        shift
-        ;;
     --unsigned )
+        # A no-op, kept so the release pipelines that pass it keep working.
+        # Signing moved out of this script entirely; see the note above the
+        # tagging step.
         shift
-        do_signed=false
-        tagkey=" -a"
         ;;
     --quiet )
         ECHO=:
@@ -193,9 +180,7 @@ RELEASE_AUX="$RELEASE_TOOLS/release-aux"
 
 # Check that we have external scripts that we use
 found=true
-for fn in "$RELEASE_TOOLS/do-copyright-year" \
-          "$RELEASE_TOOLS/openssl-pgp" \
-          "$RELEASE_TOOLS/sq-pkcs11-git-shim"; do
+for fn in "$RELEASE_TOOLS/do-copyright-year"; do
     if ! [ -f "$fn" ]; then
         echo >&2 "'$fn' is missing"
         found=false
@@ -436,13 +421,12 @@ if [ -n "$reviewers" ]; then
     addrev --release --nopr $reviewers
 fi
 $ECHO "Tagging release with tag $release_tag."
-if $do_signed; then
-    git -c "gpg.program=$RELEASE_TOOLS/sq-pkcs11-git-shim" \
-        tag$tagkey "$release_tag" \
-        -m "OpenSSL $release release tag"
-else
-    git tag$tagkey "$release_tag" -m "OpenSSL $release release tag"
-fi
+# Annotated, never signed.  The signing key lives on an HSM that only
+# hsm-client can reach, and this script runs on the build host, so the tag is
+# re-signed afterwards by whoever has that access -- `git tag -s -f` over the
+# same commit, then the tarball via release-tools/openssl-pgp.  Keeping the two
+# apart is what lets staging run without any HSM at all.
+git tag -a "$release_tag" -m "OpenSSL $release release tag"
 
 tarfile=openssl-$release.tar
 tgzfile=$tarfile.gz
@@ -476,18 +460,12 @@ sha256hash=$(openssl sha256 < "../$tgzfile" | \
     (IFS='= '; while read X H; do echo $H; done))
 echo $sha256hash "$tgzfile" > "../$tgzfile.sha256"
 
-$VERBOSE "== Generating signature: $tgzfile.asc"
+# No signature is produced here, but a stale one from an earlier run must not
+# survive: the tarball has just been rebuilt, so any existing .asc alongside it
+# now attests to different bytes.
 rm -f "../$tgzfile.asc"
-if $do_signed; then
-    $ECHO "Signing the release tarball via openssl-pgp."
-    "$RELEASE_TOOLS/openssl-pgp" sign "../$tgzfile"
-fi
 
-if $do_signed; then
-    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" "$tgzfile.asc" )
-else
-    release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" )
-fi
+release_files=( "$tgzfile" "$tgzfile.sha1" "$tgzfile.sha256" )
 
 $VERBOSE "== Generating metadata file: $metadata"
 
@@ -672,7 +650,6 @@ B<--alpha> |
 B<--next-beta> |
 B<--beta> |
 B<--final> |
-B<--key-label>=I<label> |
 B<--unsigned> |
 B<--reviewer>=I<id> |
 B<--quiet> |
@@ -701,10 +678,10 @@ are given, they must be followed exactly.
 
 B<stage-release.sh> operates on the current worktree directly: it
 refuses to run if the worktree is not clean, and updates the current
-branch in place.  The release artifacts (tarball, hashes, signature,
-metadata) are written to the parent directory.  Pushing the resulting
+branch in place.  The release artifacts (tarball, hashes, metadata) are
+written to the parent directory.  Signing them, pushing the resulting
 commits and tag, and shipping the artifacts, are the caller's
-responsibility -- nothing is uploaded or pushed by this script.
+responsibility -- nothing is signed, uploaded or pushed by this script.
 
 =head1 OPTIONS
 
@@ -739,22 +716,17 @@ Multiple reviewers are allowed.
 If no reviewer is given, you will have to run C<addrev> manually, which
 means retagging a release commit manually as well.
 
-=item B<--key-label>=I<label>
-
-The C<CKA_LABEL> of the HSM-resident private key used for signing.
-Tag signing goes through C<release-tools/sq-pkcs11-git-shim>
-(plugged into C<git> via C<gpg.program>); tarball signing goes
-through C<release-tools/openssl-pgp>.  Both ultimately invoke
-C<sq-pkcs11> against the same PKCS#11 token.
-
-The value is also exported as C<OPENSSL_PGP_CURRENT_SUBKEY_LABEL>
-so C<openssl-pgp> picks up the same key without an extra
-environment hop.
-
 =item B<--unsigned>
 
-Do not sign the tarball.  This leaves it for other scripts to sign
-the file later.
+Accepted and ignored, so that callers passing it keep working.
+
+This script does not sign.  The release tag it creates is annotated,
+and neither it nor the tarball is signed here: the signing key is held
+on an HSM that the build host cannot reach.  Signing is a separate step
+performed where that access exists, re-tagging the same commit with
+C<git tag -s -f> through C<sq-pkcs11-gpg-shim> and signing the tarball
+with C<release-tools/openssl-pgp>.  Splitting the two is what lets a
+release be staged, and staging rehearsals be run, with no HSM at all.
 
 =item B<--quiet>
 
@@ -878,10 +850,6 @@ The source tarball itself.
 =item F<openssl-{VERSION}.tar.gz.sha1>, F<openssl-{VERSION}.tar.gz.sha256>
 
 The SHA1 and SHA256 checksums for F<openssl-{VERSION}.tar.gz>.
-
-=item F<openssl-{VERSION}.tar.gz.asc>
-
-The detached PGP signature for F<openssl-{VERSION}.tar.gz>.
 
 =item F<openssl-{VERSION}.dat>
 
