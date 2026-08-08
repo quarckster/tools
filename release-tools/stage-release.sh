@@ -414,8 +414,8 @@ $ECHO "Tagging release with tag $release_tag."
 # Annotated, never signed.  The signing key lives on an HSM that only
 # hsm-client can reach, and this script runs on the build host, so the tag is
 # re-signed afterwards by whoever has that access -- `git tag -s -f` over the
-# same commit, then the tarball via release-tools/openssl-pgp.  Keeping the two
-# apart is what lets staging run without any HSM at all.
+# same commit, then the tarball with `sq-pkcs11 sign`.  Keeping the two apart
+# is what lets staging run without any HSM at all.
 git tag -a "$release_tag" -m "OpenSSL $release release tag"
 
 tarfile=openssl-$release.tar

@@ -6,14 +6,13 @@
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
 #
-# openssl-pgp -- OpenSSL release-artifacts OpenPGP key/cert/sign helper.
+# openssl-pgp -- OpenSSL release-artifacts OpenPGP key and certificate helper.
 #
 # Implements the release-artifact OpenPGP policy on top of sq-pkcs11
 # (which speaks PKCS#11 to the nShield HSM).  Capabilities:
 #
 #   - generate the policy primary key and current signing subkey
 #   - issue / rotate the published OpenPGP certificate
-#   - sign release artifacts with the current signing subkey
 #   - issue primary-key and subkey-revocation certificates
 #
 # Requires sq-pkcs11 on PATH (or OPENSSL_PGP_SQ_PKCS11 set).
@@ -29,7 +28,6 @@ Usage:
   openssl-pgp subkey-generate [--label LABEL] [--module MODULE]
   openssl-pgp cert-init [--generate-keys] [--output FILE] [--revocation-output FILE]
   openssl-pgp subkey-rotate --new-subkey-label LABEL [--generate-subkey] [--input-cert FILE] [--output FILE]
-  openssl-pgp sign [--output FILE] [--binary] FILE...
   openssl-pgp cert-revoke [--output FILE] [--reason REASON] [--message TEXT]
   openssl-pgp subkey-revoke --subkey-fingerprint FPR [--input-cert FILE] [--output FILE] [--reason REASON] [--message TEXT]
 
@@ -39,7 +37,6 @@ Required configuration (per command):
   subkey-rotate    OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_PRIMARY_CARDSET
                    (does NOT use OPENSSL_PGP_CURRENT_SUBKEY_LABEL — old subkey
                    comes from the input cert, new one from --new-subkey-label)
-  sign             OPENSSL_PGP_CURRENT_SUBKEY_LABEL
   cert-revoke      OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_PRIMARY_CARDSET
   subkey-revoke    OPENSSL_PGP_PRIMARY_LABEL, OPENSSL_PGP_PRIMARY_CARDSET,
                    plus --subkey-fingerprint identifying which subkey in
@@ -70,7 +67,7 @@ Optional configuration:
   OPENSSL_PGP_NFKMINFO               nfkminfo path (default: /opt/nfast/bin/nfkminfo)
   OPENSSL_PGP_GENTIME_TZ             Timezone of nfkminfo gentime (default: UTC)
 
-This wrapper implements the OpenSSL release-artifacts signing policy:
+This wrapper implements the OpenSSL release-artifacts key policy:
   - generated OpenPGP keys are nShield PKCS#11 RSA-4096 keys
   - generated keys are created with generatekey --generate --batch
   - generated keys always include logkeyusage=yes for Security World audit logging
@@ -78,14 +75,9 @@ This wrapper implements the OpenSSL release-artifacts signing policy:
   - signing subkeys are generated protect=module
   - primary validity is fixed to 5y; signing subkey validity is fixed to 1y
   - cert creation/signing timestamps are derived from nShield gentime
-  - artifact signing always uses OPENSSL_PGP_CURRENT_SUBKEY_LABEL
-  - per-signing audit (key identity, timestamp, requester, result, error
+  - per-key-use audit (key identity, timestamp, requester, result, error
     condition) is captured by the nShield Security World audit log; keys
     must be generated with logkeyusage=yes
-  - the artifact-name and artifact-digest fields required by the policy
-    come from the operator's release pipeline log (whichever script /
-    automation invokes "openssl-pgp sign"), correlated to the HSM log by
-    (key, timestamp); the wrapper itself does not duplicate this
 EOF
 }
 
@@ -225,8 +217,8 @@ sq() {
 # subkey-rotate, cert-revoke, subkey-revoke).  preload runs the OCS
 # quorum ceremony and exec()s sq-pkcs11 with the preloaded session
 # inherited via libcknfast; OPENSSL_PGP_PRIMARY_CARDSET names the OCS.
-# Subkey operations (sign) use the plain sq() above — the signing
-# subkey is module-protected and needs no preload.
+# Subkey generation uses the plain sq() above — a signing subkey is
+# module-protected and needs no preload.
 #
 # OPENSSL_PGP_PRELOAD_MODULE pins preload to a single nShield module
 # (-m flag).  Default "1" — when the agent has more than one module and
@@ -341,15 +333,6 @@ require_cert_exists() {
 require_output_absent() {
     local path=$1
     [[ ! -e "$path" ]] || die "refusing to overwrite existing file: $path"
-}
-
-default_sig_path() {
-    local artifact=$1
-    if [[ "$artifact" == *.* ]]; then
-        printf '%s.asc\n' "$artifact"
-    else
-        printf '%s.asc\n' "$artifact"
-    fi
 }
 
 generatekey_pkcs11() {
@@ -559,78 +542,6 @@ cmd_subkey_rotate() {
     note "update OPENSSL_PGP_CURRENT_SUBKEY_LABEL after publication and cutover"
 }
 
-cmd_sign() {
-    local output='' binary=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --output) output=${2:?missing value for --output}; shift 2 ;;
-            --binary) binary=1; shift ;;
-            -h|--help) usage; exit 0 ;;
-            --*) die "unknown sign argument: $1" ;;
-            *) break ;;
-        esac
-    done
-    [[ $# -gt 0 ]] || die "sign requires at least one file"
-    if [[ $# -gt 1 && -n "$output" ]]; then
-        die "sign --output may only be used with one input file"
-    fi
-
-    # sign uses only the current signing subkey; no primary auth, no UID, no
-    # cardset.  Validate that the env var names a key that exists in the HSM.
-    require_pkcs11_module
-    require_sq_pkcs11_binary
-    require_nshield_metadata_tools
-    require_hsm_label OPENSSL_PGP_CURRENT_SUBKEY_LABEL
-    verify_rsa4096_label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL"
-    require_cert_exists "$OPENSSL_PGP_CERT"
-    local subkey_created
-    subkey_created=$(hsm_gentime "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL")
-
-    # Pre-flight: confirm the configured HSM signing key is a current
-    # valid signer in the published cert before any artefact is signed.
-    # Catches a stale, unrelated, revoked, or expired
-    # OPENSSL_PGP_CURRENT_SUBKEY_LABEL — without this check, a typo in
-    # the env var would silently produce a release signature that fails
-    # verification against the published cert.
-    sq verify-signing-key \
-        --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
-        --creation-time "$subkey_created" \
-        --input-cert "$OPENSSL_PGP_CERT" \
-        || die "OPENSSL_PGP_CURRENT_SUBKEY_LABEL=$OPENSSL_PGP_CURRENT_SUBKEY_LABEL is not a current valid signer in $OPENSSL_PGP_CERT (see message above); refusing to sign"
-
-    # Derive the signature's key-creation time from the published cert
-    # (--input-cert) rather than passing --creation-time "$subkey_created"
-    # directly.  This ties the signature's issuer fingerprint to the exact
-    # subkey published in $OPENSSL_PGP_CERT — the single source of truth
-    # verifiers use — and matches the git-tag shim, which has no nfkminfo
-    # gentime to fall back on.  The verify-signing-key pre-flight above
-    # already proved the subkey (at $subkey_created) is in this cert, so
-    # the derived time equals $subkey_created by construction.
-    local artifact sig args=()
-    [[ "$binary" == "1" ]] && args+=(--binary)
-    for artifact in "$@"; do
-        [[ -r "$artifact" ]] || die "artifact not readable: $artifact"
-        if [[ -n "$output" ]]; then
-            sig=$output
-            require_output_absent "$sig"
-            sq sign "${args[@]}" \
-                --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
-                --input-cert "$OPENSSL_PGP_CERT" \
-                --output "$sig" \
-                "$artifact"
-        else
-            sig=$(default_sig_path "$artifact")
-            require_output_absent "$sig"
-            sq sign "${args[@]}" \
-                --key-label "$OPENSSL_PGP_CURRENT_SUBKEY_LABEL" \
-                --input-cert "$OPENSSL_PGP_CERT" \
-                "$artifact"
-        fi
-        note "signed: $artifact -> $sig"
-        note "audit source: nShield Security World key usage log (key must be generated with logkeyusage=yes)"
-    done
-}
-
 cmd_cert_revoke() {
     local output="${OPENSSL_PGP_CERT%.asc}-primary-revocation.asc" reason=compromised message="primary key suspected compromised"
     while [[ $# -gt 0 ]]; do
@@ -726,7 +637,7 @@ main() {
     # require_* / verify_* calls.
     case "$cmd" in
         -h|--help|help) usage ;;
-        primary-generate|subkey-generate|cert-init|subkey-rotate|sign|cert-revoke|subkey-revoke)
+        primary-generate|subkey-generate|cert-init|subkey-rotate|cert-revoke|subkey-revoke)
             "cmd_${cmd//-/_}" "$@"
             ;;
         *) die "unknown command: $cmd" ;;
