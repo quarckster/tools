@@ -445,10 +445,11 @@ fi
 $VERBOSE "== Generating checksums: $tgzfile.sha1 $tgzfile.sha256"
 sha1hash=$(openssl sha1 < "../$tgzfile" | \
     (IFS='= '; while read X H; do echo $H; done))
-echo $sha1hash "$tgzfile" > "../$tgzfile.sha1"
 sha256hash=$(openssl sha256 < "../$tgzfile" | \
     (IFS='= '; while read X H; do echo $H; done))
-echo $sha256hash "$tgzfile" > "../$tgzfile.sha256"
+
+echo "$sha1hash *$tgzfile" > "../$tgzfile.sha1"
+echo "$sha256hash *$tgzfile" > "../$tgzfile.sha256"
 
 # No signature is produced here, but a stale one from an earlier run must not
 # survive: the tarball has just been rebuilt, so any existing .asc alongside it
